@@ -1,1 +1,1 @@
-# Cartoraphy-Plotting-with-PyGMT
+# Cartography-Plotting-with-PyGMT
