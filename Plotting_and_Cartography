@@ -1,0 +1,171 @@
+import pygmt #import the pygmt library
+import os #system calls that we will use for data management
+import xarray as xr
+import numpy as np
+def load_image(fid, limmax=None, limmin=None, ndval=-9999):
+    g = xr.open_dataset(fid, engine='rasterio').squeeze() #Load in the TIF Data using xarray
+    if limmax: #Mask out bad values if necessary
+        g = g.where(g < limmax)
+    if limmin:
+        g = g.where(g > limmin)
+    if ndval:
+        g = g.where(g != ndval)
+    return g #Return a filtered xarray object
+
+def plot_dataframe(df, fig, **kwaargs):
+    fname = 'tmp.gmt' #Create a temporary file in GMT format
+    if os.path.exists(fname):
+        os.remove(fname)
+    df = df[~df.geometry.is_empty] #Make sure there are no empty points/polygons
+    df = df[df.geometry != None]
+    df.to_file(fname, driver='OGR_GMT') #Export to a temp file
+    fig.plot(data=fname, **kwaargs) #Plot the tempfile, passing extra arguments via **kwaargs
+    os.remove(fname) #Clean up the temporary file
+
+dem = load_image('/Users/enduranceebhodaghe/Spatial Data Analysis/Data/SRTM_GTOPO_u30_mosaic_nodata_clip.tif', limmin=0)
+xmin,xmax,ymin,ymax = float(dem.x.min()), float(dem.x.max()), float(dem.y.min()), float(dem.y.max())
+
+xmin,xmax,ymin,ymax
+
+import geopandas as gpd
+rgi = gpd.read_file('/Users/enduranceebhodaghe/Spatial Data Analysis/Data/RGI_Centroids.gpkg')
+
+fig = pygmt.Figure()
+fig.coast(shorelines=True, region=[xmin, xmax, ymin, ymax], projection="M20c",)
+fig.grdimage(grid=dem.band_data.squeeze(), cmap="geo")#, transparency=35)
+plot_dataframe(rgi, fig, color='white', style="a0.2c", pen="0.0p") #More on plotting points here: https://www.pygmt.org/latest/tutorials/plot.html
+with pygmt.config(FONT='18p'):
+    fig.basemap(frame=['a5g5', 'WSne'])
+fig.colorbar(frame=["a1000", 'x+l"Elevation (m)"'])
+fig.show()
+
+fig = pygmt.Figure()
+with pygmt.config(FONT='18p',MAP_TITLE_OFFSET='1p'):
+    fig.basemap(region=[xmin, xmax, ymin, ymax], projection="M20c", frame=['a10', 'WSne'])
+pygmt.makecpt(cmap='dem2', series=[0,8000,250])
+fig.grdimage(grid=dem.band_data.squeeze(), interpolation='n')
+plot_dataframe(rgi, fig, color='white', style="a0.2c", pen="0.0p")
+fig.colorbar(frame=["af", 'x+l"Elevation [km]"'], position="g89.4/42.1+w7/0.5+h+m", box='+gwhite+p1')
+fig.show()
+
+import pandas as pd
+fid = '/Users/enduranceebhodaghe/Spatial Data Analysis/Data/USGS_Quakes_2009-2019.csv.gz'
+df = pd.read_csv(fid, compression='gzip')
+
+crs = 'epsg:4326'
+import shapely.wkt
+geom = [shapely.wkt.loads(wkt) for wkt in df.geometry.values]
+gdf = gpd.GeoDataFrame(df, crs=crs, geometry=geom)
+gdf['depth'] = list(map(lambda x: x.z, geom))
+
+#Choose a region around Japan
+xmin,xmax,ymin,ymax = 130, 150, 32, 51
+#Use those bounds to only choose a subset of the quakes
+japan_quakes = gdf.loc[(gdf.geometry.x > xmin) & (gdf.geometry.x < xmax) & (gdf.geometry.y > ymin) & (gdf.geometry.y < ymax)]
+
+japan_quakes.plot()
+
+# Create a gmt figure
+fig = pygmt.Figure()
+fig.coast(land="gray", water="lightblue", shorelines=True, region=[xmin, xmax, ymin, ymax], projection="M20c",)
+plot_dataframe(japan_quakes, fig, style='c0.3c', color='red', pen='black', label='"Earthquakes"')
+#fig.plot(x=japan_quakes.geometry.x, y=japan_quakes.geometry.y, style='c0.3c', color='red', \
+         #pen='black', label='"Earthquakes"')
+with pygmt.config(FONT='18p'):
+    fig.basemap(frame=['a5g5', 'WSne'])
+    fig.legend(position="jTL+o0.3c", box='+gwhite+p1p')
+fig.show()
+
+#Sort by magnitude so we can see the big values plot on top
+japan_quakes = japan_quakes.sort_values('mag')
+
+#Color by depth
+fig = pygmt.Figure()
+fig.coast(land="gray", water="lightblue", shorelines=True, region=[xmin, xmax, ymin, ymax], projection="M20c",)
+
+#Add data to put something on the legend
+fig.plot(x=japan_quakes.geometry.x, y=japan_quakes.geometry.y, style='c0.3c', color='red', label='Earthquakes')
+
+#Create a custom colormap using log bins and the data value extent
+output_cpt = 'japan.cpt'
+pygmt.makecpt(output=output_cpt, cmap='magma', \
+              series=[np.log10(japan_quakes.mag.min()),np.log10(japan_quakes.mag.max()), 0.01], \
+              transparency='+a100', background='white', log=True)
+fig.plot(x=japan_quakes.geometry.x, y=japan_quakes.geometry.y, color=japan_quakes.mag, style='c0.3c', \
+         cmap=output_cpt, pen='black')
+
+#Add legend, frame, and colorbar
+with pygmt.config(FONT='18p'):
+    fig.basemap(frame=['a5g5', 'WSne'])
+    fig.legend(position="jTL+o0.3c", box='+gwhite+p1p')
+    fig.colorbar(cmap=output_cpt,frame=['+l"Magnitude"'])
+fig.show()
+
+#Use a real background downloaded automatically for the region
+grid = pygmt.datasets.load_earth_relief(resolution="30s", region=[xmin, xmax, ymin, ymax])
+
+fig = pygmt.Figure()
+fig.coast(shorelines=True, region=[xmin, xmax, ymin, ymax], projection="M20c",)
+
+#Add earth relief
+fig.grdimage(grid=grid, cmap='geo') #Plot a grid (xarray grid or TIF file)
+with pygmt.config(FONT='18p'):
+    fig.colorbar(frame=['x+l"Elevation (m)"'], position="JMR") #Specify the colorbar to be on the side
+
+#Add data to put something on the legend
+fig.plot(x=japan_quakes.geometry.x, y=japan_quakes.geometry.y, style='c0.3c', color='white', label='Earthquakes')
+
+#Create a custom colormap
+output_cpt = 'japan.cpt'
+pygmt.makecpt(output=output_cpt, cmap='magma', \
+              series=[np.log10(japan_quakes.mag.min()),np.log10(japan_quakes.mag.max()), 0.01], \
+              transparency='+a100', background='white', log=True)
+fig.plot(x=japan_quakes.geometry.x, y=japan_quakes.geometry.y, color=japan_quakes.mag, style='c0.3c', \
+         cmap=output_cpt, pen='black', transparency=30)
+
+#Add legend, frame, and colorbar
+with pygmt.config(FONT='18p'):
+    fig.basemap(frame=['a5g5', 'WSne'])
+    fig.legend(position="jTL+o0.3c", box='+gwhite+p1p')
+    fig.colorbar(cmap=output_cpt,frame=['+l"Magnitude"'])
+fig.show()
+
+fig = pygmt.Figure()
+boxes = [[130, 150, 32, 51],[-130, -120, 33, 43]]
+lets = ["(A)", "(B)"]
+for i, box in enumerate(boxes):
+    let = lets[i]
+    xmin,xmax,ymin,ymax = box
+    quakes = gdf.loc[(gdf.geometry.x > xmin) & (gdf.geometry.x < xmax) & (gdf.geometry.y > ymin) & (gdf.geometry.y < ymax)]
+    quakes = quakes.sort_values('mag')
+    
+    grid = pygmt.datasets.load_earth_relief(resolution="30s", region=[xmin, xmax, ymin, ymax])
+    fig.coast(shorelines=True, region=[xmin, xmax, ymin, ymax], projection="M20c",)
+
+    #Add earth relief
+    fig.grdimage(grid=grid, cmap='geo') #Plot a grid (xarray grid or TIF file)
+    if i == 1:
+        with pygmt.config(FONT='18p'):
+            fig.colorbar(frame=['x+l"Elevation (m)"'], position="JMR") #Specify the colorbar to be on the side
+
+    #Add data to put something on the legend
+    fig.plot(x=quakes.geometry.x, y=quakes.geometry.y, style='c0.3c', color='red', label='Earthquakes')
+
+    #Create a custom colormap
+    output_cpt = 'japan.cpt'
+    pygmt.makecpt(output=output_cpt, cmap='magma', series=[np.log10(3),np.log10(8.5), 0.01], \
+              transparency='+a100', background='white', log=True)
+    fig.plot(x=quakes.geometry.x, y=quakes.geometry.y, color=quakes.mag, style='c0.3c', \
+             cmap=output_cpt, pen='black')
+
+    #Add legend, frame, and colorbar
+    with pygmt.config(FONT='18p'):
+        fig.basemap(frame=['a5g5', 'WSne'])
+        fig.legend(position="jTL+o0.3c", box='+gwhite+p1p')
+        fig.colorbar(cmap=output_cpt,frame=['+l"Magnitude"'])
+    if i == 0:
+        #Move the origin of our plot so we can put another panel in
+        fig.shift_origin(xshift="26c")
+
+fig.savefig('Montage_Quakes.png', dpi=300)
+fig.show()
